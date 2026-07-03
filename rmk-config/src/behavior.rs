@@ -94,10 +94,10 @@ impl crate::KeyboardTomlConfig {
                     }
                     let mut seen_device_ids: Vec<Option<u8>> = Vec::new();
                     for entry in entries {
-                        if entry.target_layer >= layout.layers {
+                        if entry.target_layer >= num_layers {
                             return Err(format!(
-                                "keyboard.toml: [[behavior.auto_mouse_layer]].target_layer must be a valid layer index (< [layout.layers] = {}), got {}",
-                                layout.layers, entry.target_layer
+                                "keyboard.toml: [[behavior.auto_mouse_layer]].target_layer must be a valid layer index (< [keymap].layers = {}), got {}",
+                                num_layers, entry.target_layer
                             ));
                         }
                         if entry.threshold == Some(0) {

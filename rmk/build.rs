@@ -14,8 +14,19 @@ fn main() {
 
     // Compute build hash and write to constants.rs
     let build_hash = compute_build_hash();
+    // rmk's own release version, served by Rynk's `GetDeviceInfo` so hosts can
+    // key behavior off the library version rather than the user's app version.
+    let [major, minor, patch] = ["MAJOR", "MINOR", "PATCH"].map(|part| {
+        env::var(format!("CARGO_PKG_VERSION_{part}"))
+            .expect("cargo sets CARGO_PKG_VERSION_* for build scripts")
+            .parse::<u8>()
+            .expect("rmk version component must fit in u8")
+    });
     let constants = format!(
-        "#[allow(clippy::redundant_static_lifetimes)]\npub(crate) const BUILD_HASH: u32 = {build_hash:#010x};\n"
+        "#[allow(clippy::redundant_static_lifetimes)]\npub(crate) const BUILD_HASH: u32 = {build_hash:#010x};\n\
+         pub(crate) const RMK_VERSION_MAJOR: u8 = {major};\n\
+         pub(crate) const RMK_VERSION_MINOR: u8 = {minor};\n\
+         pub(crate) const RMK_VERSION_PATCH: u8 = {patch};\n"
     );
 
     let out_dir = env::var("OUT_DIR").unwrap();

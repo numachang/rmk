@@ -26,7 +26,7 @@ pub use uart::run_rynk_uart;
 
 use self::handlers::Handle;
 use super::context::KeyboardContext;
-use crate::config::RmkConfig;
+use crate::config::{DeviceConfig, RmkConfig};
 use crate::keymap::KeyMap;
 
 // Use `core::assert!` explicitly: in a `defmt` build the crate-level `assert!`
@@ -41,12 +41,15 @@ const _: () = core::assert!(
 /// Transport-agnostic Rynk service.
 pub struct RynkService<'a> {
     pub(super) ctx: KeyboardContext<'a>,
+    /// Device identity served by `GetDeviceInfo`.
+    device: DeviceConfig<'static>,
 }
 
 impl<'a> RynkService<'a> {
-    pub fn new(keymap: &'a KeyMap<'a>, _config: &RmkConfig<'static>) -> Self {
+    pub fn new(keymap: &'a KeyMap<'a>, config: &RmkConfig<'static>) -> Self {
         Self {
             ctx: KeyboardContext::new(keymap),
+            device: config.device_config,
         }
     }
 
@@ -61,6 +64,7 @@ impl<'a> RynkService<'a> {
             Cmd::Reboot => Handle::<command::Reboot>::handle_message(self, msg).await,
             Cmd::BootloaderJump => Handle::<command::BootloaderJump>::handle_message(self, msg).await,
             Cmd::StorageReset => Handle::<command::StorageReset>::handle_message(self, msg).await,
+            Cmd::GetDeviceInfo => Handle::<command::GetDeviceInfo>::handle_message(self, msg).await,
 
             // Keymap (incl. encoder)
             Cmd::GetKeyAction => Handle::<command::GetKeyAction>::handle_message(self, msg).await,
@@ -248,10 +252,10 @@ mod tests {
 
     use embedded_io_async::{ErrorKind, ErrorType, Read, Write};
     use rmk_types::action::KeyAction;
-    use rmk_types::protocol::rynk::ProtocolVersion;
+    use rmk_types::protocol::rynk::{DeviceInfo, FirmwareVersion, ProtocolVersion};
 
     use super::*;
-    use crate::config::{BehaviorConfig, PositionalConfig, RmkConfig};
+    use crate::config::{BehaviorConfig, DeviceConfig, PositionalConfig, RmkConfig};
     use crate::keymap::{KeyMap, KeymapData};
     use crate::test_support::test_block_on as block_on;
 
@@ -451,6 +455,61 @@ mod tests {
         let decoded: Result<ProtocolVersion, RynkError> =
             postcard::from_bytes(&resp[RYNK_HEADER_SIZE..]).expect("response payload must decode");
         assert_eq!(decoded, Ok(ProtocolVersion::CURRENT));
+    }
+
+    /// `GetDeviceInfo` reflects the `DeviceConfig` handed to `RynkService::new`,
+    /// truncating over-long identity strings on a char boundary instead of
+    /// panicking on multi-byte input.
+    #[test]
+    fn run_session_get_device_info_reflects_device_config() {
+        let mut behavior = BehaviorConfig::default();
+        let positional: PositionalConfig<1, 1> = PositionalConfig::default();
+        let mut data: KeymapData<1, 1, 1, 0> = KeymapData::new([[[KeyAction::No]]]);
+        let keymap = block_on(KeyMap::new(&mut data, &mut behavior, &positional));
+        let config = RmkConfig {
+            device_config: DeviceConfig {
+                vid: 0x1209,
+                pid: 0x0002,
+                // 11 three-byte chars = 33 bytes: one over the 32-byte cap, and
+                // byte 32 falls inside the 11th char, so only 10 survive.
+                manufacturer: "键键键键键键键键键键键",
+                product_name: "Board",
+                serial_number: "rynk:0001",
+            },
+            ..RmkConfig::default()
+        };
+        let service = RynkService::new(&keymap, &config);
+
+        let mut chunks = VecDeque::new();
+        chunks.push_back(header(Cmd::GetDeviceInfo.raw(), 0x37, 0));
+        let mut rx = ChunkRead { chunks };
+        let mut tx = VecWrite { captured: Vec::new() };
+
+        block_on(service.run_session(&mut rx, &mut tx));
+
+        let resp = &tx.captured;
+        assert_eq!(&resp[0..2], &Cmd::GetDeviceInfo.to_le_bytes(), "cmd echo");
+        assert_eq!(resp[2], 0x37, "seq echo");
+        let payload_len = u16::from_le_bytes([resp[3], resp[4]]) as usize;
+        let info = postcard::from_bytes::<Result<DeviceInfo, RynkError>>(
+            &resp[RYNK_HEADER_SIZE..RYNK_HEADER_SIZE + payload_len],
+        )
+        .expect("response payload must decode")
+        .expect("Ok envelope");
+
+        assert_eq!(info.vendor_id, 0x1209);
+        assert_eq!(info.product_id, 0x0002);
+        assert_eq!(info.manufacturer.as_str(), "键键键键键键键键键键");
+        assert_eq!(info.product_name.as_str(), "Board");
+        assert_eq!(info.serial_number.as_str(), "rynk:0001");
+        assert_eq!(
+            info.rmk_version,
+            FirmwareVersion {
+                major: crate::RMK_VERSION_MAJOR,
+                minor: crate::RMK_VERSION_MINOR,
+                patch: crate::RMK_VERSION_PATCH,
+            },
+        );
     }
 
     /// A topic-range CMD arriving as a request is dropped without a reply — a

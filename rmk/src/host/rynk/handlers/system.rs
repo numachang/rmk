@@ -1,8 +1,13 @@
-//! System handlers — handshake, reboot, bootloader jump, storage reset.
+//! System handlers — handshake, device identity, reboot, bootloader jump, storage reset.
 
 use rmk_types::constants;
-use rmk_types::protocol::rynk::command::{BootloaderJump, GetCapabilities, GetVersion, Reboot, StorageReset};
-use rmk_types::protocol::rynk::{DeviceCapabilities, ProtocolVersion, RYNK_HEADER_SIZE, RynkError, StorageResetMode};
+use rmk_types::protocol::rynk::command::{
+    BootloaderJump, GetCapabilities, GetDeviceInfo, GetVersion, Reboot, StorageReset,
+};
+use rmk_types::protocol::rynk::{
+    DEVICE_INFO_STRING_SIZE, DeviceCapabilities, DeviceInfo, FirmwareVersion, ProtocolVersion, RYNK_HEADER_SIZE,
+    RynkError, StorageResetMode,
+};
 
 use super::super::RynkService;
 use super::Handle;
@@ -78,4 +83,33 @@ impl Handle<StorageReset> for RynkService<'_> {
         self.ctx.reset_storage().await;
         Ok(())
     }
+}
+
+impl Handle<GetDeviceInfo> for RynkService<'_> {
+    async fn handle(&self, _: ()) -> Result<DeviceInfo, RynkError> {
+        Ok(DeviceInfo {
+            rmk_version: FirmwareVersion {
+                major: crate::RMK_VERSION_MAJOR,
+                minor: crate::RMK_VERSION_MINOR,
+                patch: crate::RMK_VERSION_PATCH,
+            },
+            vendor_id: self.device.vid,
+            product_id: self.device.pid,
+            manufacturer: truncated(self.device.manufacturer),
+            product_name: truncated(self.device.product_name),
+            serial_number: truncated(self.device.serial_number),
+        })
+    }
+}
+
+/// Copy `s` into the bounded wire string; over-long input is cut at the last
+/// whole char that fits, so multi-byte content can never panic or split.
+fn truncated(s: &str) -> heapless::String<DEVICE_INFO_STRING_SIZE> {
+    let mut out = heapless::String::new();
+    for c in s.chars() {
+        if out.push(c).is_err() {
+            break;
+        }
+    }
+    out
 }
